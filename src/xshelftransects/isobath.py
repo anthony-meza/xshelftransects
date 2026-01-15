@@ -1,6 +1,11 @@
 import numpy as np
 from pyproj import Transformer
 
+try:
+    import contourpy as cp
+except ModuleNotFoundError:
+    cp = None
+
 
 # =============================================================================
 # Isobath / contour helpers
@@ -55,11 +60,12 @@ def longest_boundary_contour(ds, boundary_mask, crs="EPSG:3031"):
 
     m = boundary_mask.astype(float).fillna(0.0)
 
-    import matplotlib.pyplot as plt
-    fig, ax = plt.subplots()
-    cs = ax.contour(x2d, y2d, np.asarray(m), levels=[0.5])
-    segs = cs.allsegs[0]
-    plt.close(fig)
+    if cp is None:
+        raise ModuleNotFoundError(
+            "contourpy is required to extract boundary contours. Install contourpy."
+        )
+    cg = cp.contour_generator(x=x2d, y=y2d, z=np.asarray(m))
+    segs = cg.lines(0.5)
 
     if len(segs) == 0:
         raise ValueError("No contour found for boundary_mask (level=0.5).")

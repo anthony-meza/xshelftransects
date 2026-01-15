@@ -2,6 +2,11 @@ import numpy as np
 import xarray as xr
 import pandas as pd
 
+try:
+    import xesmf as xe
+except ModuleNotFoundError:
+    xe = None
+
 
 # =============================================================================
 # Sampling helpers
@@ -57,13 +62,11 @@ def _sample_vars_xesmf(ds_in, obj, lon_t, lat_t, method, reuse_weights=False, re
     xarray.Dataset
         Sampled output with trailing dimension "loc".
     """
-    try:
-        import xesmf as xe
-    except ModuleNotFoundError as e:
+    if xe is None:
         raise ModuleNotFoundError(
             "engine='xesmf' requires the optional dependency 'xesmf'. "
             "Install it (and its ESMF backend) to use xESMF-based sampling."
-        ) from e
+        )
 
     ds_out = _locstream_out(lon_t, lat_t)
     if regridder is None:

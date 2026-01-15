@@ -4,8 +4,8 @@ from pyproj import Transformer
 
 from .geometry import (
     _build_transect_geometry_dataset,
+    _contour_outward_sign,
     _make_transect_lonlat,
-    _orient_normals_by_depth_polyfit,
     _resample_contour_xy,
     _tangent_normal_xy,
 )
@@ -53,8 +53,6 @@ def cross_shelf_transects(
     crs="EPSG:3031",
     engine="xesmf",
     method="bilinear",
-    reuse_weights=False,
-    regridder=None,
     lon_name="lon",
     lat_name="lat",
     return_geometry=True,
@@ -84,11 +82,6 @@ def cross_shelf_transects(
         Sampling backend. "xesmf" supports curvilinear grids; "xarray" requires 1D lon/lat.
     method : str
         Interpolation method for sampling (e.g., "bilinear", "nearest_s2d").
-    reuse_weights : bool
-        Reuse xESMF weights when engine="xesmf".
-    regridder : optional
-        A pre-constructed xesmf.Regridder for the final variable sampling step. If provided,
-        it is used directly (only relevant when engine="xesmf").
     lon_name, lat_name : str
         Coordinate names for lon/lat when engine="xarray".
     return_geometry : bool
@@ -101,7 +94,6 @@ def cross_shelf_transects(
         if `var` is a list, returns a Dataset.
     geometry : xarray.Dataset
         Returned only if return_geometry=True. Contains:
-          - lon/lat of transect points (section, transect_length)
           - anchor lon0/lat0 (section)
           - along-boundary distance s_m (section)
           - normals nx/ny (section)
@@ -111,8 +103,9 @@ def cross_shelf_transects(
     Notes
     -----
     The boundary is extracted as the longest contour of `boundary_mask` at the 0/1
-    midpoint (0.5), resampled at `transect_spacing`. Transects are oriented so that
-    depth increases with transect_length, and land/ice (deptho <= 0) are masked to NaN.
+    midpoint (0.5), resampled at `transect_spacing`. Transects are oriented by
+    contour winding so +transect_length points away from the enclosed mask, and
+    land/ice (deptho <= 0) are masked to NaN.
     """
     if ("lon" not in ds) or ("lat" not in ds):
         raise KeyError(
@@ -134,48 +127,54 @@ def cross_shelf_transects(
     contour_xy, contour_lon, contour_lat = longest_boundary_contour(ds, boundary_mask, crs=crs)
     contour_xy, s_m = _resample_contour_xy(contour_xy, transect_spacing)
     _, n = _tangent_normal_xy(contour_xy)
+    normal_sign = _contour_outward_sign(contour_xy)
 
     x0, y0 = contour_xy[:, 0], contour_xy[:, 1]
-    nx, ny = n[:, 0].copy(), n[:, 1].copy()
+    nx, ny = n[:, 0].copy() * normal_sign, n[:, 1].copy() * normal_sign
 
     tf_inv = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
-
-    # (3) Provisional transects + (4) depth-based orientation
-    lon_t0, lat_t0 = _make_transect_lonlat(tf_inv, x0, y0, nx, ny, X)
     depth_method = "nearest_s2d" if engine == "xesmf" else "nearest"
+    deptho_filled = ds["deptho"].fillna(0.0)
 
-    dloc0_ds = _sample_vars(
-        ds, ds_in, ds["deptho"], lon_t0, lat_t0,
-        engine=engine, method=depth_method, reuse_weights=False, regridder=None,
-        lon_name=lon_name, lat_name=lat_name,
-    )
-    dloc0 = next(iter(dloc0_ds.data_vars.values())).values.reshape(x0.size, X.size)
-
-    flip = _orient_normals_by_depth_polyfit(X, dloc0)
-    nx *= flip
-    ny *= flip
-
-    # (5) Final transects + land mask
+    # (3) Final transects + land mask
     lon_t, lat_t = _make_transect_lonlat(tf_inv, x0, y0, nx, ny, X)
 
     dloc_ds = _sample_vars(
-        ds, ds_in, ds["deptho"], lon_t, lat_t,
+        ds, ds_in, deptho_filled, lon_t, lat_t,
         engine=engine, method=depth_method, reuse_weights=False, regridder=None,
         lon_name=lon_name, lat_name=lat_name,
     )
     dloc = next(iter(dloc_ds.data_vars.values())).values.reshape(x0.size, X.size)
 
     wet = np.isfinite(dloc) & (dloc > 0)
-    lon_t = np.where(wet, lon_t, np.nan)
-    lat_t = np.where(wet, lat_t, np.nan)
+    lon_t_sample = np.where(wet, lon_t, np.nan)
+    lat_t_sample = np.where(wet, lat_t, np.nan)
 
     # (6) Sample requested variables
+    reuse_weights = engine == "xesmf"
     vloc = _sample_vars(
-        ds, ds_in, ds[vars].where(ds["deptho"] > 0), lon_t, lat_t,
-        engine=engine, method=method, reuse_weights=reuse_weights, regridder=regridder,
+        ds, ds_in, ds[vars].where(deptho_filled > 0), lon_t_sample, lat_t_sample,
+        engine=engine, method=method, reuse_weights=reuse_weights, regridder=None,
         lon_name=lon_name, lat_name=lat_name,
     )
     vloc = _unstack_loc(vloc, X, s_m)
+    vloc = vloc.assign_coords(
+        depth=(
+            ("section", "transect_length"),
+            dloc,
+            {"units": "m", "description": "Sampled depth along transects."},
+        ),
+        lon=(
+            ("section", "transect_length"),
+            lon_t,
+            {"units": "degrees_east", "description": "Transect longitude."},
+        ),
+        lat=(
+            ("section", "transect_length"),
+            lat_t,
+            {"units": "degrees_north", "description": "Transect latitude."},
+        ),
+    )
 
     xshelf = vloc[vars[0]] if len(vars) == 1 else vloc
     if not return_geometry:
@@ -187,8 +186,6 @@ def cross_shelf_transects(
         lat0=lat0,
         nx=nx,
         ny=ny,
-        lon_t=lon_t,
-        lat_t=lat_t,
         dloc=dloc,
         contour_lon=contour_lon,
         contour_lat=contour_lat,

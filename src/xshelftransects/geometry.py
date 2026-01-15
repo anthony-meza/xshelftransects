@@ -1,5 +1,11 @@
+import warnings
 import numpy as np
 import xarray as xr
+
+try:
+    from scipy.stats import theilslopes
+except ModuleNotFoundError:
+    theilslopes = None
 
 def _project_lonlat(lon2d, lat2d, crs_out):
     """
@@ -67,12 +73,32 @@ def _tangent_normal_xy(contour_xy):
     - np.gradient is taken with respect to vertex index, not an explicit spatial coordinate.
       Because the contour is resampled to roughly uniform spacing and we normalize to unit
       vectors, this is typically adequate.
-    - The normal sign is arbitrary here; it is oriented later so that depth increases with +transect_length.
+    - The normal sign is arbitrary here; it is oriented later using contour orientation.
     """
     dxy = np.gradient(np.asarray(contour_xy), axis=0)
     t = dxy / np.maximum(np.linalg.norm(dxy, axis=1, keepdims=True), 1e-12)
     n = np.c_[-t[:, 1], t[:, 0]]
     return t, n
+
+
+def _contour_outward_sign(contour_xy):
+    """
+    Determine a global sign (+1 or -1) for outward normals based on contour orientation.
+
+    Notes
+    -----
+    - For a counter-clockwise contour, the left normal points inward, so outward is -1.
+    - For a clockwise contour, the left normal points outward, so outward is +1.
+    """
+    contour_xy = np.asarray(contour_xy)
+    if contour_xy.shape[0] < 3:
+        return 1.0
+    x = contour_xy[:, 0]
+    y = contour_xy[:, 1]
+    area = 0.5 * np.sum(x[:-1] * y[1:] - x[1:] * y[:-1])
+    if not np.isfinite(area) or area == 0.0:
+        return 1.0
+    return -1.0 if area > 0.0 else 1.0
 
 
 def _make_transect_lonlat(tf_inv, x0, y0, nx, ny, X):
@@ -93,15 +119,16 @@ def _make_transect_lonlat(tf_inv, x0, y0, nx, ny, X):
     return np.asarray(lon_t), np.asarray(lat_t)
 
 
-def _orient_normals_by_depth_polyfit(transect_length, dloc0):
+def _orient_normals_by_offshore_slope(transect_length, dloc0, offshore_slope_window=200e3, min_wet_fraction=0.5):
     """
     Orient normals so that +transect_length points offshore (depth increases with transect_length).
 
     Mechanism
     ---------
     - Given depth sampled along provisional transects (dloc0[section, transect_length]),
-      fit depth(transect_length) with a 1st-degree polynomial per section.
-    - If slope < 0, flip the normal for that section.
+      check that near-boundary points are wet, then estimate the near-boundary slope
+      from points within offshore_slope_window of the boundary.
+    - If the median slope < 0, flip the normal for that section.
 
     Returns
     -------
@@ -113,10 +140,54 @@ def _orient_normals_by_depth_polyfit(transect_length, dloc0):
         coords={"section": np.arange(dloc0.shape[0]), "transect_length": transect_length},
     ).where(lambda z: z > 0)
 
-    pf = depth_tran0.polyfit(dim="transect_length", deg=1, skipna=True)
-    coef = pf["polyfit_coefficients"]
-    slope = coef.sel(degree=1) if 1 in coef["degree"].values else coef.isel(degree=0)
-    return xr.where(slope < 0, -1.0, 1.0).values
+    x = depth_tran0["transect_length"]
+    window_mask = x <= offshore_slope_window
+    wet_mask = xr.apply_ufunc(np.isfinite, depth_tran0).astype(bool)
+    wet_first = wet_mask.where(window_mask).sum("transect_length")
+    n_window = window_mask.sum().item()
+    min_wet = max(1, int(np.ceil(min_wet_fraction * n_window)))
+
+    dx = xr.DataArray(
+        np.diff(np.asarray(transect_length)),
+        dims=("transect_length",),
+        coords={"transect_length": depth_tran0["transect_length"].isel(transect_length=slice(0, -1))},
+    )
+    depth_filled = depth_tran0.fillna(0.0)
+    slopes = depth_filled.diff("transect_length") / dx
+    valid_pair = wet_mask & wet_mask.shift(transect_length=-1, fill_value=False)
+    slopes = slopes.where(valid_pair.isel(transect_length=slice(0, -1)))
+    slopes_window = slopes.where(window_mask.isel(transect_length=slice(0, -1)))
+    slope_med = slopes_window.median("transect_length", skipna=True)
+
+    def _theil_sen_1d(y, x_vals):
+        if theilslopes is None:
+            raise ModuleNotFoundError(
+                "Theil-Sen slope requires scipy. Install scipy or choose a different orientation method."
+            )
+        valid = np.isfinite(y)
+        if valid.sum() < 2:
+            warnings.warn("Theil-Sen slope: fewer than 2 valid points; returning NaN.", RuntimeWarning)
+            return np.nan
+        xi = x_vals[valid]
+        yi = y[valid]
+        slope, _, _, _ = theilslopes(yi, xi)
+        return slope
+
+    depth_window = depth_tran0.where(window_mask)
+    slope_ts = xr.apply_ufunc(
+        lambda y: _theil_sen_1d(y, np.asarray(transect_length)),
+        depth_window,
+        input_core_dims=[["transect_length"]],
+        output_core_dims=[[]],
+        vectorize=True,
+        dask="parallelized",
+        output_dtypes=[float],
+    )
+
+    flip = xr.where(wet_first < min_wet, -1.0, 1.0)
+    flip = xr.where(slope_med < 0, -1.0, flip)
+    flip = xr.where(slope_ts < 0, -1.0, flip)
+    return flip.values
 
 
 def _build_transect_geometry_dataset(
@@ -124,8 +195,6 @@ def _build_transect_geometry_dataset(
     lat0,
     nx,
     ny,
-    lon_t,
-    lat_t,
     dloc,
     contour_lon,
     contour_lat,
@@ -142,8 +211,6 @@ def _build_transect_geometry_dataset(
     """
     return xr.Dataset(
         data_vars=dict(
-            lon=(("section", "transect_length"), lon_t, {"units": "degrees_east", "description": "Transect longitude."}),
-            lat=(("section", "transect_length"), lat_t, {"units": "degrees_north", "description": "Transect latitude."}),
             lon0=(("section",), np.asarray(lon0), {"units": "degrees_east", "description": "Longitude where transect intersects boundary (transect_length=0)."}),
             lat0=(("section",), np.asarray(lat0), {"units": "degrees_north", "description": "Latitude where transect intersects boundary (transect_length=0)."}),
             s_m=(("section",), np.asarray(s_m), {"units": "m", "description": "Along-boundary distance from start."}),

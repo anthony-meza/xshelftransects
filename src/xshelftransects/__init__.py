@@ -5,7 +5,7 @@ from .geometry import (
     _resample_contour_xy,
     _tangent_normal_xy,
     _make_transect_lonlat,
-    _orient_normals_by_depth_polyfit,
+    _orient_normals_by_offshore_slope,
 )
 from .sampling import (
     _locstream_out,
@@ -26,7 +26,7 @@ __all__ = [
     "_resample_contour_xy",
     "_tangent_normal_xy",
     "_make_transect_lonlat",
-    "_orient_normals_by_depth_polyfit",
+    "_orient_normals_by_offshore_slope",
     "_locstream_out",
     "_as_dataset",
     "_sample_vars_xesmf",
