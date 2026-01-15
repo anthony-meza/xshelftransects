@@ -203,7 +203,6 @@ def _build_transect_geometry_dataset(
     crs,
     engine,
     method,
-    reuse_weights,
     transect_spacing,
 ):
     """
@@ -229,7 +228,6 @@ def _build_transect_geometry_dataset(
             crs=crs,
             engine=engine,
             sampling_method=method,
-            reuse_weights=bool(reuse_weights),
             description=(
                 "Cross-shelf transects built from boundary_mask contour; transect_length=0 at "
                 "contour; +transect_length oriented toward deeper water; land masked to NaN."

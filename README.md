@@ -1,7 +1,7 @@
 xshelftransects
 ==============
 
-Build and sample cross-shelf transects from a binary boundary mask on model grids.
+Build and sample cross-shelf transects from a binary boundary mask on model grids. Useful for understanding gravity current and coastally-trapped waves, which are defined by their orientation and proximity to the continental shelves. 
 
 Install
 -------

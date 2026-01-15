@@ -38,7 +38,7 @@ def _as_dataset(obj):
     raise TypeError("obj must be xarray.DataArray or xarray.Dataset")
 
 
-def _sample_vars_xesmf(ds_in, obj, lon_t, lat_t, method, reuse_weights=False, regridder=None):
+def _sample_vars_xesmf(ds_in, obj, lon_t, lat_t, method, regridder=None):
     """
     xESMF-based sampling at LocStream target points (optional dependency).
 
@@ -52,8 +52,6 @@ def _sample_vars_xesmf(ds_in, obj, lon_t, lat_t, method, reuse_weights=False, re
         Target lon/lat arrays with shape (section, transect_length).
     method : str
         xESMF method, e.g. "bilinear" or "nearest_s2d".
-    reuse_weights : bool
-        Passed to xesmf.Regridder when a new regridder is constructed.
     regridder : xesmf.Regridder or None
         If provided, used directly.
 
@@ -75,7 +73,6 @@ def _sample_vars_xesmf(ds_in, obj, lon_t, lat_t, method, reuse_weights=False, re
             ds_out,
             method,
             locstream_out=True,
-            reuse_weights=reuse_weights,
             unmapped_to_nan=True,
         )
     return regridder(_as_dataset(obj))
@@ -118,7 +115,6 @@ def _sample_vars(
     lat_t,
     engine="xesmf",
     method="bilinear",
-    reuse_weights=False,
     regridder=None,
     lon_name="lon",
     lat_name="lat",
@@ -133,7 +129,7 @@ def _sample_vars(
     if engine == "xesmf":
         return _sample_vars_xesmf(
             ds_in, obj, lon_t, lat_t, method,
-            reuse_weights=reuse_weights, regridder=regridder,
+            regridder=regridder,
         )
     if engine == "xarray":
         return _sample_vars_xarray(obj, lon_t, lat_t, method, lon_name=lon_name, lat_name=lat_name)

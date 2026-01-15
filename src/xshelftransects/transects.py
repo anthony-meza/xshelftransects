@@ -22,7 +22,7 @@ from .sampling import (
 # Public API
 # =============================================================================
 
-def xesmf_interpolation(ds_in, obj, lon_t, lat_t, method="bilinear", reuse_weights=False, regridder=None):
+def xesmf_interpolation(ds_in, obj, lon_t, lat_t, method="bilinear", regridder=None):
     """
     Public wrapper around the xESMF LocStream sampling helper.
     """
@@ -32,7 +32,6 @@ def xesmf_interpolation(ds_in, obj, lon_t, lat_t, method="bilinear", reuse_weigh
         lon_t,
         lat_t,
         method,
-        reuse_weights=reuse_weights,
         regridder=regridder,
     )
 
@@ -133,35 +132,29 @@ def cross_shelf_transects(
     nx, ny = n[:, 0].copy() * normal_sign, n[:, 1].copy() * normal_sign
 
     tf_inv = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
-    depth_method = "nearest_s2d" if engine == "xesmf" else "nearest"
     deptho_filled = ds["deptho"].fillna(0.0)
 
-    # (3) Final transects + land mask
+    # (3) Final transects
     lon_t, lat_t = _make_transect_lonlat(tf_inv, x0, y0, nx, ny, X)
 
-    dloc_ds = _sample_vars(
-        ds, ds_in, deptho_filled, lon_t, lat_t,
-        engine=engine, method=depth_method, reuse_weights=False, regridder=None,
-        lon_name=lon_name, lat_name=lat_name,
-    )
-    dloc = next(iter(dloc_ds.data_vars.values())).values.reshape(x0.size, X.size)
-
-    wet = np.isfinite(dloc) & (dloc > 0)
-    lon_t_sample = np.where(wet, lon_t, np.nan)
-    lat_t_sample = np.where(wet, lat_t, np.nan)
-
     # (6) Sample requested variables
-    reuse_weights = engine == "xesmf"
+    obj_vars = [vn for vn in vars if vn != "deptho"]
+    obj = ds[obj_vars + ["deptho"]].where(deptho_filled > 0)
     vloc = _sample_vars(
-        ds, ds_in, ds[vars].where(deptho_filled > 0), lon_t_sample, lat_t_sample,
-        engine=engine, method=method, reuse_weights=reuse_weights, regridder=None,
+        ds, ds_in, obj, lon_t, lat_t,
+        engine=engine, method=method, regridder=None,
         lon_name=lon_name, lat_name=lat_name,
     )
     vloc = _unstack_loc(vloc, X, s_m)
+    dloc = vloc["deptho"].values
+    wet = np.isfinite(dloc) & (dloc > 0)
+    vloc = vloc.where(wet)
+    if "deptho" not in vars:
+        vloc = vloc.drop_vars("deptho")
     vloc = vloc.assign_coords(
         depth=(
             ("section", "transect_length"),
-            dloc,
+            np.where(wet, dloc, np.nan),
             {"units": "m", "description": "Sampled depth along transects."},
         ),
         lon=(
@@ -194,7 +187,6 @@ def cross_shelf_transects(
         crs=crs,
         engine=engine,
         method=method,
-        reuse_weights=reuse_weights,
         transect_spacing=transect_spacing,
     )
 
