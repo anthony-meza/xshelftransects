@@ -155,5 +155,16 @@ def _unstack_loc(vloc_ds, transect_length, s_m):
         Same data with dimensions (..., section, transect_length), plus coord s_m(section).
     """
     nsec = s_m.size
+    # MultiIndex flattens the (section, transect_length) grid into a 1D "loc" index.
     mi = pd.MultiIndex.from_product([np.arange(nsec), transect_length], names=("section", "transect_length"))
-    return vloc_ds.assign_coords(loc=mi).unstack("loc").assign_coords(s_m=("section", np.asarray(s_m)))
+    # Explicitly wrap the MultiIndex to keep xarray's coordinate behavior stable.
+    mindex_coords = xr.Coordinates.from_pandas_multiindex(mi, "loc")
+    return (
+        vloc_ds
+        # The loc dimension is a flattened (section, transect_length) grid.
+        .assign_coords(mindex_coords)
+        # Unstack loc back into 2D section/transect_length dimensions.
+        .unstack("loc")
+        # Keep along-boundary distance as a section coordinate.
+        .assign_coords(s_m=("section", np.asarray(s_m)))
+    )
