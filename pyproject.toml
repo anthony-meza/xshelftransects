@@ -17,6 +17,7 @@ dependencies = [
     "cartopy",
     "contourpy",
     "pyproj (<3.7)",
+    "netcdf4 (<1.7.3)",
 ]
 
 [tool.poetry]
