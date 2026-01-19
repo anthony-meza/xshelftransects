@@ -16,6 +16,7 @@ dependencies = [
     "intake-esm (>=2025.12.12,<2026.0.0)",
     "cartopy",
     "contourpy",
+    "pyproj (<3.7)",
 ]
 
 [tool.poetry]
